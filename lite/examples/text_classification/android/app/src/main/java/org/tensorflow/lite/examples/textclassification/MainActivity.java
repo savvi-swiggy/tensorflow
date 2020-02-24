@@ -18,7 +18,7 @@ package org.tensorflow.lite.examples.textclassification;
 
 import android.os.Bundle;
 import android.os.Handler;
-import android.support.v7.app.AppCompatActivity;
+import androidx.appcompat.app.AppCompatActivity;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
@@ -84,7 +84,9 @@ public class MainActivity extends AppCompatActivity {
           List<Result> results = client.classify(text);
 
           // Show classification result on screen
-          showResult(text, results);
+            if(results != null){
+                showResult(text, results);
+            }
         });
   }
 

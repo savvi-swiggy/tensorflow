@@ -19,7 +19,7 @@ package org.tensorflow.lite.examples.textclassification;
 import android.content.Context;
 import android.content.res.AssetFileDescriptor;
 import android.content.res.AssetManager;
-import android.support.annotation.WorkerThread;
+import androidx.annotation.WorkerThread;
 import android.util.Log;
 import java.io.BufferedReader;
 import java.io.FileInputStream;
@@ -35,14 +35,20 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
+import java.util.regex.Pattern;
+
 import org.tensorflow.lite.Interpreter;
 
 /** Interface to load TfLite model and provide predictions. */
 public class TextClassificationClient {
   private static final String TAG = "TextClassificationDemo";
-  private static final String MODEL_PATH = "text_classification.tflite";
-  private static final String DIC_PATH = "vocab.txt";
+  private static final String MODEL_PATH = "profanity_classifier_v0.1.tflite";
+  private static final String DIC_PATH = "vocab_0.1.txt";
   private static final String LABEL_PATH = "labels.txt";
+  private static final String REGEX_PATH = "regex.txt";
+  private static final String REGEX_IGNORE_PATH = "regex_ignore.txt";
+
+
 
   private static final int SENTENCE_LEN = 256;  // The maximum length of an input sentence.
   // Simple delimiter to split words.
@@ -64,6 +70,10 @@ public class TextClassificationClient {
   private final Map<String, Integer> dic = new HashMap<>();
   private final List<String> labels = new ArrayList<>();
   private Interpreter tflite;
+
+  private List<String> regexList = new ArrayList<>();
+  private List<String> regexIgnoreList = new ArrayList<>();
+
 
   /** An immutable result returned by a TextClassifier describing what was classified. */
   public static class Result {
@@ -115,7 +125,6 @@ public class TextClassificationClient {
       return resultString.trim();
     }
   }
-  ;
 
   public TextClassificationClient(Context context) {
     this.context = context;
@@ -127,6 +136,8 @@ public class TextClassificationClient {
     loadModel();
     loadDictionary();
     loadLabels();
+    loadRegex();
+    loadRegexIgnore();
   }
 
   /** Load TF Lite model. */
@@ -163,41 +174,96 @@ public class TextClassificationClient {
     }
   }
 
+  /** Load labels. */
+  @WorkerThread
+  private synchronized void loadRegex() {
+    try {
+      loadRegexFile(this.context.getAssets());
+      Log.v(TAG, "Labels loaded.");
+    } catch (IOException ex) {
+      Log.e(TAG, ex.getMessage());
+    }
+  }
+
+  /** Load labels. */
+  @WorkerThread
+  private synchronized void loadRegexIgnore() {
+    try {
+      loadRegexIgnoreFile(this.context.getAssets());
+      Log.v(TAG, "Labels loaded.");
+    } catch (IOException ex) {
+      Log.e(TAG, ex.getMessage());
+    }
+  }
+
   /** Free up resources as the client is no longer needed. */
   @WorkerThread
   public synchronized void unload() {
     tflite.close();
     dic.clear();
     labels.clear();
+    regexList.clear();
+    regexIgnoreList.clear();
   }
 
   /** Classify an input string and returns the classification results. */
   @WorkerThread
   public synchronized List<Result> classify(String text) {
-    // Pre-prosessing.
-    float[][] input = tokenizeInputText(text);
 
-    // Run inference.
-    Log.v(TAG, "Classifying text with TF Lite...");
-    float[][] output = new float[1][labels.size()];
-    tflite.run(input, output);
+    // clean input
+    List<String> uncleanedInput = new ArrayList<>(Arrays.asList(text.split(" ")));
+    uncleanedInput.removeAll(regexIgnoreList);
 
-    // Find the best classifications.
-    PriorityQueue<Result> pq =
-        new PriorityQueue<>(
-            MAX_RESULTS, (lhs, rhs) -> Float.compare(rhs.getConfidence(), lhs.getConfidence()));
-    for (int i = 0; i < labels.size(); i++) {
-      pq.add(new Result("" + i, labels.get(i), output[0][i]));
+    if(uncleanedInput.size() > 0){
+      StringBuilder cleanedText = new StringBuilder();
+      for (String it: uncleanedInput) {
+        cleanedText.append(it).append(" ");
+      }
+
+
+      // Pre-prosessing.
+      float[][] input = tokenizeInputText(cleanedText.toString());
+
+      // Run inference.
+      Log.v(TAG, "Classifying text with TF Lite...");
+      float[][] output = new float[1][labels.size()];
+      tflite.run(input, output);
+
+      // Find the best classifications.
+      PriorityQueue<Result> pq =
+          new PriorityQueue<>(
+              MAX_RESULTS, (lhs, rhs) -> Float.compare(rhs.getConfidence(), lhs.getConfidence()));
+      for (int i = 0; i < labels.size(); i++) {
+        pq.add(new Result("" + i, labels.get(i), output[0][i]));
+      }
+      final ArrayList<Result> results = new ArrayList<>();
+      while (!pq.isEmpty()) {
+        results.add(pq.poll());
+      }
+
+      if(doRegexMatch(cleanedText.toString())){
+        results.add(new Result("" + 3, "Regex", 1.0F));
+      }
+
+      return results;
+
     }
-    final ArrayList<Result> results = new ArrayList<>();
-    while (!pq.isEmpty()) {
-      results.add(pq.poll());
-    }
 
-    // Return the probability of each class.
-    return results;
+    return null;
+
   }
 
+
+  @WorkerThread
+  private synchronized Boolean doRegexMatch(String text){
+    for (int i =0; i < regexList.size(); i++){
+      if (Pattern.matches(regexList.get(i), text)){
+        return true;
+      }
+    }
+
+    return false;
+  }
 
 
   /** Load TF Lite model from assets. */
@@ -222,6 +288,28 @@ public class TextClassificationClient {
     }
   }
 
+  /** Load dictionary from assets. */
+  private void loadRegexFile(AssetManager assetManager) throws IOException {
+    try (InputStream ins = assetManager.open(REGEX_PATH);
+         BufferedReader reader = new BufferedReader(new InputStreamReader(ins))) {
+      // Each line in the label file is a label.
+      while (reader.ready()) {
+        regexList.add(reader.readLine());
+      }
+    }
+  }
+
+
+  /** Load dictionary from assets. */
+  private void loadRegexIgnoreFile(AssetManager assetManager) throws IOException {
+    try (InputStream ins = assetManager.open(REGEX_IGNORE_PATH);
+         BufferedReader reader = new BufferedReader(new InputStreamReader(ins))) {
+      // Each line in the label file is a label.
+      while (reader.ready()) {
+        regexIgnoreList.add(reader.readLine());
+      }
+    }
+  }
   /** Load labels from assets. */
   private void loadDictionaryFile(AssetManager assetManager) throws IOException {
     try (InputStream ins = assetManager.open(DIC_PATH);
@@ -272,4 +360,5 @@ public class TextClassificationClient {
   List<String> getLabels() {
     return this.labels;
   }
+
 }
